@@ -1,0 +1,265 @@
+---
+title: "Mesangial RAGE KO Transcriptomic Analysis"
+author: "Mark Ziemann"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    fig_width: 7
+    fig_height: 7
+theme: cosmo
+---
+
+Source: https://github.com/markziemann/mesangial_rageko
+
+# Introduction
+
+Looking at doing comparison of control and RAGE KO mesangial cells.
+
+# Methods
+
+* 2x 91 bp reads.
+
+* Quality trimming with skewer 0.2.2 to ensure 3' end base quality > 20.
+
+* Ensembl transcriptome v107 mRatBN7.2 was downloaded. 
+Fasta files of cDNA and ncRNA were concatenated before indexing.
+Kallisto 0.46.0 was used for mapping paired end reads to the transcriptome.
+
+* Data were loaded into R v4.2.1.
+
+
+```{r,libs}
+
+suppressPackageStartupMessages({
+  library("reshape2")
+  library("DESeq2")
+  library("gplots")
+  library("mitch")
+  library("dplyr")
+  library("biomaRt")
+})
+
+```
+
+## Data
+
+```{r,load}
+
+tmp <- read.table("3col.tsv.gz",header=F)
+x <- as.matrix(acast(tmp, V2~V1, value.var="V3", fun.aggregate = sum))
+x <- as.data.frame(x)
+rownames(x) <- sapply(strsplit(rownames(x),"\\."),"[[",1)
+g2tx <- read.table("../ref/Rattus_norvegicus.mRatBN7.2.107.gtf.gene2transcript.tsv.gz")
+gnames <- read.table("../ref/Rattus_norvegicus.mRatBN7.2.107.gtf.genenames.tsv.gz")
+gng2tx <- merge(gnames,g2tx,by="V1")
+gng2tx$gene <- paste(gng2tx$V1,gng2tx$V2.x)
+rownames(gng2tx) <- gng2tx$V2.y
+gng2tx$V1 = gng2tx$V2.x = gng2tx$V2.y = NULL
+x2 <- merge(x,gng2tx,by=0)
+x2$Row.names <- NULL
+xx <- aggregate(. ~ gene,x2,sum)
+rownames(xx) <- xx$gene
+xx$gene <- NULL
+xx[1:6,1:6]
+dim(xx)
+head(xx)
+
+```
+
+## Samplesheet
+
+```{r,samplesheet}
+
+colnames(xx) <- sapply(strsplit(colnames(xx),"_"),"[[",1)
+mysamples <- colnames(xx)
+trt <- as.numeric(grepl("T",mysamples))
+ss <- data.frame(mysamples,trt)
+rownames(ss) <- mysamples
+
+```
+
+## QC
+
+TODO: rRNA carryover.
+
+```{r,qc}
+
+par(mar=c(5,8,3,1))
+barplot(colSums(xx),horiz=TRUE,las=1,xlab="num reads",col=ss$cols)
+sums <- colSums(xx)
+sums <- sums[order(sums)]
+barplot(sums,horiz=TRUE,las=1,xlab="num reads",cex.names=0.8)
+
+```
+
+## MDS plot
+
+And correlation heat map.
+
+```{r,mds}
+
+mds <- cmdscale(dist(t(xx)))
+
+plot(mds, xlab="Coordinate 1", ylab="Coordinate 2",
+  type = "p",bty="n", cex=4 )
+
+text(mds, labels=rownames(mds) ,col="black")
+
+heatmap.2(cor(xx),trace="n",main="Pearson correlation heatmap",margin=c(8,8),cexRow=0.7,cexCol=0.7)
+
+```
+
+## Filt
+
+```{r,filt}
+
+dim(xx)
+xx <- xx[which(rowMeans(xx)>10),]
+dim(xx)
+xx <- round(xx)
+
+```
+
+## Differential expression
+
+```{r,func}
+
+maplot <- function(de,contrast_name) {
+  de <- de[which(!is.na(de$padj)),]
+  sig <-subset(de, padj < 0.05 )
+  up <-rownames(subset(de, padj < 0.05 & log2FoldChange > 0))
+  dn <-rownames(subset(de, padj < 0.05 & log2FoldChange < 0))
+  GENESUP <- length(up)
+  GENESDN <- length(dn)
+  DET=nrow(de)
+  SUBHEADER = paste(GENESUP, "up, ", GENESDN, "down", DET, "detected")
+  ns <-subset(de, padj > 0.05 )
+  plot(log2(de$baseMean),de$log2FoldChange,
+       xlab="log2 basemean", ylab="log2 foldchange",
+       pch=19, cex=0.5, col="dark gray",
+       main=contrast_name, cex.main=1)
+  points(log2(sig$baseMean),sig$log2FoldChange,
+         pch=19, cex=0.5, col="red")
+  mtext(SUBHEADER,cex = 1)
+}
+make_volcano <- function(de,name) {
+    de <- de[which(!is.na(de$padj)),]
+    de$pvalue[which(de$pvalue==0)] <- 1e-320
+    sig <- subset(de,padj<0.05)
+    N_SIG=nrow(sig)
+    N_UP=nrow(subset(sig,log2FoldChange>0))
+    N_DN=nrow(subset(sig,log2FoldChange<0))
+    DET=nrow(de)
+    HEADER=paste(N_SIG,"@5%FDR,", N_UP, "up", N_DN, "dn", DET, "detected")
+    plot(de$log2FoldChange,-log10(de$pval),cex=0.5,pch=19,col="darkgray",
+        main=name, xlab="log2 FC", ylab="-log10 pval")
+    mtext(HEADER)
+    grid()
+    points(sig$log2FoldChange,-log10(sig$pval),cex=0.5,pch=19,col="red")
+}
+
+```
+
+```{r,de01}
+
+dds <- DESeqDataSetFromMatrix(countData = xx , colData = ss , design = ~ trt )
+res <- DESeq(dds)
+z <- results(res)
+vsd <- vst(dds, blind=FALSE)
+zz <- cbind(as.data.frame(z),assay(vsd))
+dge <- as.data.frame(zz[order(zz$pvalue),])
+dge[1:20,1:6] %>% kbl(caption = "Top gene expression differences") %>% 
+  kable_paper("hover", full_width = F)
+d1up <- rownames(subset(dge,padj <= 0.05 & log2FoldChange > 0))
+d1dn <- rownames(subset(dge,padj <= 0.05 & log2FoldChange < 0))
+write.table(dge,file="dge.tsv",quote=FALSE,sep="\t")
+
+maplot(dge,"Cont1: Effect of RAGE KO")
+make_volcano(dge,"Cont1: Effect of RAGE KO")
+
+```
+
+## Pathway analysis
+
+First need ortholog table.
+
+```{r,ortho1,include=FALSE}
+
+require(biomaRt)
+datasets <- listDatasets(useMart('ensembl'))
+
+datasets[grep('norvegicus', datasets[,1]),]
+
+datasets[grep('sapiens', datasets[,1]),]
+
+rat <- useMart('ensembl', dataset = 'rnorvegicus_gene_ensembl')
+hum <- useMart('ensembl', dataset = 'hsapiens_gene_ensembl')
+
+annot_table <- getLDS(
+  mart = rat,
+  attributes = c('ensembl_gene_id','external_gene_name','chromosome_name'),
+  martL = hum,
+  attributesL = c('ensembl_gene_id','external_gene_name','chromosome_name','gene_biotype'))
+
+```
+
+Downloaded separately from the ensembl biomart website.
+
+```{r,ortho2}
+
+g1 <- read.table("../ref/mart_export1.tsv",sep="\t",header=TRUE)
+g2 <- read.table("../ref/mart_export2.tsv",sep="\t",header=TRUE)
+g1$Gene_stable_ID_version = g1$Transcript_stable_ID = g1$Transcript_stable_ID_version = NULL
+gm <- unique(merge(g2,g1,by="Gene_stable_ID"))
+head(gm)
+gm$geneid <- paste(gm$Gene_stable_ID,gm$Gene_name)
+gm$Gene_stable_ID = gm$Gene_name = NULL
+
+```
+
+Join DGE with human ortholog.
+
+```{r,mitch_prep}
+
+rownames(dge) <- sapply(strsplit(rownames(dge) ," "),"[[",1)
+
+dgeh <- merge(gm,dge,by.x="Rat_gene_stable_ID",by.y=0)
+dgeh$Rat_gene_stable_ID = NULL
+dgeh <- aggregate(. ~ geneid,dgeh,sum)
+rownames(dgeh) <- dgeh$geneid
+dgeh$geneid = NULL
+rownames(dgeh) <- sapply(strsplit(rownames(dgeh)," "),"[[",1)
+head(dgeh)
+
+```
+
+Run mitch.
+
+```{r,mitch}
+
+#download.file("https://reactome.org/download/current/ReactomePathways.gmt.zip", destfile="ReactomePathways.gmt.zip")
+#unzip("ReactomePathways.gmt.zip")
+genesets <- gmt_import("ReactomePathways.gmt")
+
+y <- mitch_import(dgeh, DEtype="deseq2",geneTable=g2)
+
+head(y)
+
+res <- mitch_calc(y, genesets, priority="effect",cores=16)
+
+mitch_report(res, "myreport.html")
+
+head(res$enrichment_result,20)
+
+```
+
+## SessionInfo
+
+```{r,session}
+
+sessionInfo()
+
+```
