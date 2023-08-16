@@ -360,7 +360,7 @@ write.table(res$enrichment_result,file="mitch_pathways.tsv",sep="\t")
 
 We have a list of mir-214 targets.
 
-```{r,blah}
+```{r,mir214}
 
 mir214_targ <- readLines("miR214_targets.txt")
 
@@ -455,7 +455,7 @@ t1(y,143,genesets)
 
 # run it for all
 res <- lapply(1:length(genesets), function(i) {
-  unlist(t1(y,i,gsl,n=5))
+  unlist(t1(y,i,gsl=genesets,n=5))
 })
 
 # format the results
@@ -493,7 +493,7 @@ Biggest effect size (upregulated) with FDR<0.05, ranked by median.
 sigup <- subset(out,padj<0.05 & median>0)
 nrow(sigup)
 
-upreg <- head(sig[order(-sigup$median),],20)
+upreg <- head(sigup[order(-sigup$median),],20)
 
 upreg %>% kbl(caption = "Top upregulated pathways") %>%
   kable_paper("hover", full_width = F)
@@ -507,7 +507,7 @@ Biggest effect size (downregulated) with FDR<0.05, ranked by median.
 sigdn <- subset(out,padj<0.05 & median<0)
 nrow(sigdn)
 
-dnreg <- head(sig[order(sigdn$median),],20)
+dnreg <- head(sigdn[order(sigdn$median),],20)
 
 dnreg %>% kbl(caption = "Top downregulated pathways") %>%
   kable_paper("hover", full_width = F)
@@ -523,6 +523,42 @@ First with some histograms.
 ```{r,t1detail,fig.height=5}
 
 gsnames <- head(rownames(upreg),10)
+for (gsname in gsnames ) {
+  gs <- genesets[[gsname]]
+  z <- y[names(y) %in% gs]
+  hist(z,xlim=c(MIN,MAX),breaks=10,xlab="generank",main=gsname)
+}
+
+for (gsname in gsnames ) {
+  gs <- genesets[[gsname]]
+  print(gsname)
+  z <- y[names(y) %in% gs]
+  z <- z[order(-z)]
+  print(z)
+}
+
+```
+
+Take a look at the downregulated pathways anyway.
+
+
+```{r,downsets}
+
+sigdn <- subset(out,`p-value`<0.05 & median<0)
+nrow(sigdn)
+
+dnreg <- head(sigdn[order(sigdn$median),],20)
+
+dnreg %>% kbl(caption = "Top downregulated pathways") %>%
+  kable_paper("hover", full_width = F)
+
+```
+
+Now some charts for those pathways.
+
+```{r,t1detail_dn,fig.height=5}
+
+gsnames <- head(rownames(dnreg),20)
 for (gsname in gsnames ) {
   gs <- genesets[[gsname]]
   z <- y[names(y) %in% gs]
