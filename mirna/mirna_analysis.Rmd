@@ -1,0 +1,252 @@
+---
+title: "miRNA: Mesangial RAGE KO Transcriptomic Analysis"
+author: "Mark Ziemann"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    fig_width: 7
+    fig_height: 7
+theme: cosmo
+---
+
+Source: https://github.com/markziemann/mesangial_rageko
+
+# Introduction
+
+Looking at doing comparison of control and RAGE KO Mouse mesangial cells RNA-seq and miRNA-seq.
+
+# Methods
+
+* RAGE KO data sequenced at Baker. 61 nt length.
+
+* WT data sequenced at BGI with 91 nt length.
+
+* Quality trimming with skewer 0.2.2 to ensure 3' end base quality > 20.
+
+* microRNA hairpins were downloaded from miRbase
+
+* Mouse hairpins were extracted from the reference and indexed with kallisto using a seed length of 15 bp.
+
+* kallisto was run in single end mode to map the reads.
+
+* Read counts were loaded into R and analysed with DESeq2.
+
+* OS, R and package versions are shown in the session info section at the end of this report.
+
+
+```{r,libs}
+
+suppressPackageStartupMessages({
+  library("reshape2")
+  library("DESeq2")
+  library("gplots")
+  library("mitch")
+  library("dplyr")
+  library("biomaRt")
+  library("kableExtra")
+})
+
+```
+
+## Data
+
+```{r,load}
+
+tmp <- read.table("3col.tsv.gz",header=F)
+x <- as.matrix(acast(tmp, V2~V1, value.var="V3", fun.aggregate = sum))
+x <- as.data.frame(x)
+
+xx <- round(x)
+dim(xx)
+head(xx)
+write.table(x=xx,file="miRNA_count_matrix.tsv",sep="\t")
+
+```
+
+Now quantify the top 10 species.
+Starting with all samples.
+
+```{r,topmirs1,figure.width=12,figure.height=7}
+
+rpm <- apply(xx, 2, function(x){x/sum(x,na.rm=T)}) * 1000000
+
+rpm <- rpm[order(rowMeans(rpm) ),]
+
+rpm <- tail(rpm,10)
+
+# create color palette:
+library(RColorBrewer)
+n=10
+pal <- brewer.pal(n, "Paired")
+
+par(mfrow=c(1,2))
+par(mar=c(10,5,3,1))
+barplot(rpm,col=pal,las=2)
+plot.new()
+legend("topleft", legend=rev(rownames(rpm)),fill=rev(pal),bg="white",cex=1)
+
+#restore default setting
+par(mar=c(5.1, 4.1, 4.1, 2.1))
+
+```
+
+Now calculate diversity of each sample.
+
+```{r,diversity1,figure.width=12,figure.height=7}
+
+pc <- apply(xx, 2, function(x){x/sum(x,na.rm=T)}) * 100
+
+res <- lapply(1:ncol(pc),function(i){
+  dat <- pc[,i]
+  dat <- dat[order(-dat)]
+  head(cumsum(dat))
+})
+names(res) <- colnames(pc)
+res
+
+```
+
+
+## Samplesheet
+
+```{r,samplesheet}
+
+#colnames(xx) <- sapply(strsplit(colnames(xx),"_"),"[[",1)
+mysamples <- colnames(xx)
+ko <- as.numeric(grepl("ko",mysamples))
+tgf <- as.numeric(grepl("TGF",mysamples))
+ss <- data.frame(mysamples,ko,tgf)
+rownames(ss) <- mysamples
+ss
+
+```
+
+## QC
+
+TODO: rRNA carryover.
+
+```{r,qc}
+
+par(mar=c(5,8,3,1))
+barplot(colSums(xx),horiz=TRUE,las=1,xlab="num reads",col=ss$cols)
+grid()
+
+```
+
+## MDS plot
+
+And correlation heat map.
+
+```{r,mds}
+
+par(mar=c(5,5,3,3))
+
+mds <- cmdscale(dist(t(xx)))
+
+plot(mds, xlab="Coordinate 1", ylab="Coordinate 2",
+  type = "p",bty="n", cex=4 )
+
+text(mds, labels=rownames(mds) ,col="black")
+
+heatmap.2(cor(xx),trace="n",main="Pearson correlation heatmap",margin=c(8,8),cexRow=0.7,cexCol=0.7)
+
+```
+
+## Differential expression
+
+Compare wt control to RAGE KO control.
+
+```{r,func}
+
+maplot <- function(de,contrast_name) {
+  de <- de[which(!is.na(de$padj)),]
+  sig <-subset(de, padj < 0.05 )
+  up <-rownames(subset(de, padj < 0.05 & log2FoldChange > 0))
+  dn <-rownames(subset(de, padj < 0.05 & log2FoldChange < 0))
+  GENESUP <- length(up)
+  GENESDN <- length(dn)
+  DET=nrow(de)
+  SUBHEADER = paste(GENESUP, "up, ", GENESDN, "down", DET, "detected")
+  ns <-subset(de, padj > 0.05 )
+  plot(log2(de$baseMean),de$log2FoldChange,
+       xlab="log2 basemean", ylab="log2 foldchange",
+       pch=19, cex=0.5, col="dark gray",
+       main=contrast_name, cex.main=1)
+  points(log2(sig$baseMean),sig$log2FoldChange,
+         pch=19, cex=0.5, col="red")
+  mtext(SUBHEADER,cex = 1)
+}
+make_volcano <- function(de,name) {
+    de <- de[which(!is.na(de$padj)),]
+    de$pvalue[which(de$pvalue==0)] <- 1e-320
+    sig <- subset(de,padj<0.05)
+    N_SIG=nrow(sig)
+    N_UP=nrow(subset(sig,log2FoldChange>0))
+    N_DN=nrow(subset(sig,log2FoldChange<0))
+    DET=nrow(de)
+    HEADER=paste(N_SIG,"@5%FDR,", N_UP, "up", N_DN, "dn", DET, "detected")
+    plot(de$log2FoldChange,-log10(de$pval),cex=0.5,pch=19,col="darkgray",
+        main=name, xlab="log2 FC", ylab="-log10 pval")
+    mtext(HEADER)
+    grid()
+    points(sig$log2FoldChange,-log10(sig$pval),cex=0.5,pch=19,col="red")
+}
+
+```
+
+```{r,de01}
+
+ss1 <- subset(ss,tgf==0)
+xx1 <- xx[,which(colnames(xx) %in% rownames(ss1) )]
+dim(xx1)
+xx1 <- xx1[which(rowMeans(xx1)>10),]
+dim(xx1)
+
+dds <- DESeqDataSetFromMatrix(countData = xx1 , colData = ss1 , design = ~ ko )
+res <- DESeq(dds)
+z <- results(res)
+vsd <- vst(dds, blind=FALSE,nsub=nrow(xx1))
+
+zz <- cbind(as.data.frame(z),assay(vsd))
+dge <- as.data.frame(zz[order(zz$pvalue),])
+dge[1:20,1:6] %>% kbl(caption = "Top gene expression differences") %>% 
+  kable_paper("hover", full_width = F)
+d1up <- rownames(subset(dge,padj <= 0.05 & log2FoldChange > 0))
+d1dn <- rownames(subset(dge,padj <= 0.05 & log2FoldChange < 0))
+write.table(dge,file="miRNA_DE_ctrl_vs_rageko.tsv",quote=FALSE,sep="\t")
+
+maplot(dge,"Cont1: Effect of RAGE KO")
+make_volcano(dge,"Cont1: Effect of RAGE KO")
+
+#agerdat <- assay(vsd)[grep("Ager",rownames(assay(vsd))),]
+#par(mar=c(5,8,3,1))
+#barplot(agerdat,horiz=TRUE,las=1,xlab="Normalised Ager expression",xlim=c(0,10))
+
+```
+
+Make a heatmap of the top 30 genes.
+
+
+```{r,heatmapx9}
+
+rpm1 <- apply(xx1, 2, function(x){x/sum(x,na.rm=T)}) * 1000000
+
+colfunc <- colorRampPalette(c("blue", "white", "red"))
+
+rpm2 <- rpm1[which(rownames(rpm1) %in% rownames(head(dge,30))),]
+
+heatmap.2(as.matrix(rpm2),margin=c(8, 22),cexRow=0.85,trace="none",
+    cexCol=0.9,col=colfunc(20),scale="row")
+
+```
+
+## SessionInfo
+
+```{r,session}
+
+sessionInfo()
+
+```
