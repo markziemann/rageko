@@ -539,7 +539,7 @@ for (gsname in gsnames ) {
 
 ```
 
-Take a look at the downregulated pathways anyway.
+## Now take a look at the downregulated pathways anyway.
 
 
 ```{r,downsets}
@@ -569,9 +569,43 @@ for (gsname in gsnames ) {
   gs <- genesets[[gsname]]
   print(gsname)
   z <- y[names(y) %in% gs]
-  z <- z[order(-z)]
+  z <- z[order(z)]
   print(z)
 }
+
+```
+
+## Custom diabetes related miR-214 targets
+
+diabetes.gmt is a curated list of msigdb pathways relevant to diabetes,
+and two gene sets derived from Kegg.
+
+```{r,custom_diabetes_genesets1}
+
+diabetes <- gmt_import("diabetes.gmt")
+
+
+dres <- lapply(1:length(diabetes), function(i) {
+  unlist(t1(y,i,gsl=diabetes,n=5))
+})
+
+# format the results
+out <- t(do.call(cbind,dres))
+rownames(out) <- out[,1]
+out <- out[,2:ncol(out)]
+out <- as.matrix(out)
+out2 <- apply(out,2,as.numeric)
+rownames(out2) <- rownames(out)
+out <- as.data.frame(out2)
+out$padj <- p.adjust(out$`p-value`)
+out <- out[order(out$`p-value`),]
+
+#sig
+sig <- subset(out,padj<0.05 )
+sig <- sig[order(-sig$median),]
+
+sig %>% kbl(caption = "Top diabetes pathways") %>%
+  kable_paper("hover", full_width = F)
 
 ```
 
